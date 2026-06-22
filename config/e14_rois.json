@@ -1,0 +1,109 @@
+{
+  "template_name": "E14 presidencial - primera pasada",
+  "description": "Recortes relativos sobre la pagina normalizada. Ajustar con --save-debug despues de probar varios PDFs reales.",
+  "defaults": {
+    "lang": "eng",
+    "psm": 7,
+    "number_whitelist": "0123456789*Xx",
+    "digit_cells": 0,
+    "min_confidence": 55,
+    "max_reasonable_votes": 250
+  },
+  "signature_detection": {
+    "page": 1,
+    "min_signed": 2,
+    "min_dark_density": 0.018,
+    "min_components": 2,
+    "boxes": [
+      {"key": "firma_jurado_1", "label": "Firma jurado 1", "box": [0.045, 0.780, 0.480, 0.815]},
+      {"key": "firma_jurado_2", "label": "Firma jurado 2", "box": [0.510, 0.780, 0.950, 0.815]},
+      {"key": "firma_jurado_3", "label": "Firma jurado 3", "box": [0.045, 0.845, 0.480, 0.880]},
+      {"key": "firma_jurado_4", "label": "Firma jurado 4", "box": [0.510, 0.845, 0.950, 0.880]},
+      {"key": "firma_jurado_5", "label": "Firma jurado 5", "box": [0.045, 0.910, 0.480, 0.945]},
+      {"key": "firma_jurado_6", "label": "Firma jurado 6", "box": [0.510, 0.910, 0.950, 0.945]}
+    ]
+  },
+  "fields": [
+    {
+      "key": "total_votantes_e11",
+      "label": "Total votantes formulario E-11",
+      "role": "control_total",
+      "type": "number",
+      "page": 0,
+      "box": [0.696, 0.252, 0.961, 0.283],
+      "required": true
+    },
+    {
+      "key": "total_votos_urna",
+      "label": "Total votos en la urna",
+      "role": "urna_total",
+      "type": "number",
+      "page": 0,
+      "box": [0.696, 0.283, 0.961, 0.313],
+      "required": true
+    },
+    {
+      "key": "total_votos_incinerados",
+      "label": "Total votos incinerados",
+      "role": "incinerados",
+      "type": "number",
+      "page": 0,
+      "box": [0.696, 0.313, 0.961, 0.344],
+      "required": false
+    },
+    {
+      "key": "candidato_1",
+      "label": "Candidato 1",
+      "role": "candidate_vote",
+      "type": "number",
+      "page": 0,
+      "box": [0.696, 0.448, 0.961, 0.474],
+      "required": true
+    },
+    {
+      "key": "candidato_2",
+      "label": "Candidato 2",
+      "role": "candidate_vote",
+      "type": "number",
+      "page": 0,
+      "box": [0.696, 0.603, 0.961, 0.628],
+      "required": true
+    },
+    {
+      "key": "votos_blanco",
+      "label": "Votos en blanco",
+      "role": "blank_votes",
+      "type": "number",
+      "page": 0,
+      "box": [0.692, 0.709, 0.961, 0.739],
+      "required": true
+    },
+    {
+      "key": "votos_nulos",
+      "label": "Votos nulos",
+      "role": "null_votes",
+      "type": "number",
+      "page": 0,
+      "box": [0.692, 0.739, 0.961, 0.770],
+      "required": true
+    },
+    {
+      "key": "votos_no_marcados",
+      "label": "Votos no marcados",
+      "role": "unmarked_votes",
+      "type": "number",
+      "page": 0,
+      "box": [0.692, 0.770, 0.961, 0.800],
+      "required": true
+    },
+    {
+      "key": "suma_total",
+      "label": "Suma total",
+      "role": "declared_total",
+      "type": "number",
+      "page": 0,
+      "box": [0.692, 0.800, 0.961, 0.836],
+      "required": true
+    }
+  ]
+}
