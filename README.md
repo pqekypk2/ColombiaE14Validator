@@ -16,6 +16,12 @@ La documentacion detallada esta en:
 - [Etiquetador y entrenamiento](docs/etiquetador-entrenamiento.md)
 - [Visualizador de inconsistencias](docs/visualizador-inconsistencias.md)
 
+## Licencia y contribuciones
+
+Este proyecto se publica bajo la licencia [Apache-2.0](LICENSE). Puede usarlo, copiarlo, modificarlo y redistribuirlo conservando la licencia y la atribucion correspondiente indicada en [NOTICE](NOTICE).
+
+Para contribuir, revise [CONTRIBUTING.md](CONTRIBUTING.md). Los cambios publicos se registran en [CHANGELOG.md](CHANGELOG.md). La version actual esta en [VERSION](VERSION).
+
 ## No se sube a GitHub
 
 Por tamano, privacidad y reproducibilidad, estos elementos quedan ignorados por Git:
