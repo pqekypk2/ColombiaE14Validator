@@ -2,7 +2,7 @@
 
 Repositorio local para analizar formularios E14 en PDF, entrenar un modelo de lectura de digitos manuscritos y revisar inconsistencias en una interfaz web local.
 
-Este repositorio esta preparado para publicar solo el codigo y la configuracion necesaria. No incluye el descargador masivo de documentos ni los datos generados durante el trabajo.
+Este repositorio esta preparado para publicar solo el codigo y la configuracion necesaria. No incluye datos generados durante el trabajo.
 
 ## Componentes
 
@@ -26,7 +26,7 @@ Por tamano, privacidad y reproducibilidad, estos elementos quedan ignorados por 
 - Imagenes, recortes y debug visual: `*.png`, `*.jpg`, `*.jpeg`, `*.tif`, `*.tiff`, etc.
 - Modelos entrenados y checkpoints: `*.pt`, `*.pth`, `*.onnx`, `*.ckpt`.
 - Logs y temporales: `logs/`, `*.log`, `*.lock`.
-- Descargador masivo y sus datos auxiliares: `src/e14_downloader.py`, `data/`, `config.json`.
+- Datos auxiliares locales: `data/`, `config.json`.
 
 El archivo `config/e14_rois.json` si se conserva porque define las regiones de lectura del formulario y es parte del codigo reproducible.
 
