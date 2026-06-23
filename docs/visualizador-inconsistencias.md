@@ -30,11 +30,19 @@ Por defecto escucha en:
 http://0.0.0.0:8010/
 ```
 
-En el mismo computador puede abrir:
+En el mismo computador puede abrir la bandeja principal de mesas:
 
 ```text
 http://127.0.0.1:8010/
 ```
+
+El visor OCR anterior sigue disponible como respaldo:
+
+```text
+http://127.0.0.1:8010/inconsistencias
+```
+
+La bandeja principal incluye PDFs dinamicos por mesa, metricas de hallazgos, filtros por alcance/campo/tipo, navegacion entre mesas, estados de revision separados y descarga CSV de mesas filtradas.
 
 Desde otro computador de la misma red use la IP local del equipo que sirve la pagina, por ejemplo:
 

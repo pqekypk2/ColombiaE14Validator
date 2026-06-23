@@ -49,6 +49,7 @@
       "type": "number",
       "page": 0,
       "box": [0.696, 0.313, 0.961, 0.344],
+      "zero_filler": "star",
       "required": false
     },
     {

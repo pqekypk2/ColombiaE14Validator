@@ -4,8 +4,10 @@ import argparse
 import csv
 import gzip
 import hashlib
+import io
 import json
 import mimetypes
+import sqlite3
 import threading
 import urllib.parse
 import webbrowser
@@ -23,6 +25,8 @@ DEFAULT_FIELDS = ROOT / "reports" / "ocr" / "campos.csv"
 DEFAULT_REVIEWS = ROOT / "reports" / "ocr" / "revision_inconsistencias.csv"
 DEFAULT_FRAUDS = ROOT / "reports" / "ocr" / "fraude_reportado.csv"
 DEFAULT_DOWNLOADS = ROOT / "downloads" / "E14" / "claveros"
+DEFAULT_SOURCE_DB = ROOT / "state" / "e14.sqlite"
+DEFAULT_SOURCE_DOWNLOADS = ROOT / "downloads" / "E14"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8010
 
@@ -82,6 +86,20 @@ HTML = r"""<!doctype html>
       align-items: center;
       gap: 8px;
       min-width: 0;
+    }
+    .nav-link {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
     }
     .counter {
       color: var(--muted);
@@ -413,6 +431,7 @@ HTML = r"""<!doctype html>
   <header>
     <h1>Revisor de inconsistencias E14</h1>
     <div class="header-actions">
+      <a class="nav-link" href="/">Mesas</a>
       <div class="counter" id="globalCounter">Cargando</div>
       <button id="reloadBtn">Actualizar</button>
     </div>
@@ -1291,6 +1310,1284 @@ HTML = r"""<!doctype html>
 """
 
 
+COMPARISON_HTML = r"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Comparador de fuentes E14</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --panel-2: #eef3f7;
+      --ink: #17202a;
+      --muted: #657182;
+      --line: #d7dfe8;
+      --accent: #075e9f;
+      --accent-ink: #ffffff;
+      --danger: #b42318;
+      --warning: #986400;
+      --ok: #177245;
+      --soft-warning: #fff6df;
+      --soft-danger: #fff0ee;
+      --shadow: 0 1px 2px rgba(18, 31, 45, 0.08);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      overflow: hidden;
+    }
+    header {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    h1 { margin: 0; font-size: 18px; line-height: 1.2; }
+    button, select, input {
+      font: inherit;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+    }
+    button {
+      min-height: 34px;
+      padding: 0 12px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    a.nav-link, button.primary {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 12px;
+      border-radius: 6px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: var(--accent-ink);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    select, input { height: 34px; padding: 0 10px; min-width: 0; }
+    .header-actions { display: flex; align-items: center; gap: 8px; }
+    .shell {
+      height: calc(100% - 56px);
+      display: grid;
+      grid-template-columns: 340px minmax(0, 1fr);
+      min-height: 0;
+    }
+    aside {
+      min-height: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+    }
+    .filters {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .filter-row.three { grid-template-columns: 1fr 1fr 1fr; }
+    .section-title {
+      margin-top: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .metric {
+      min-height: 58px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+    }
+    .metric-value {
+      display: block;
+      font-size: 18px;
+      line-height: 1.1;
+      font-weight: 700;
+    }
+    .metric-label {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .download-bar {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .download-bar button {
+      width: 100%;
+      min-width: 0;
+      padding: 0 8px;
+      font-size: 12px;
+    }
+    .ghost {
+      background: #fff;
+      color: var(--accent);
+      border-color: var(--line);
+    }
+    .counter { font-size: 12px; color: var(--muted); }
+    .list { min-height: 0; overflow: auto; padding: 8px; }
+    .item {
+      width: 100%;
+      display: block;
+      text-align: left;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+      color: var(--ink);
+    }
+    .item.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(7, 94, 159, 0.12); }
+    .item-title { font-weight: 700; font-size: 13px; margin-bottom: 7px; word-break: break-word; }
+    .badges { display: flex; flex-wrap: wrap; gap: 5px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      border-radius: 999px;
+      padding: 0 8px;
+      font-size: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--ink);
+    }
+    .badge.danger { background: var(--soft-danger); color: var(--danger); border-color: #ffd2cc; }
+    .badge.warning { background: var(--soft-warning); color: var(--warning); border-color: #ffe1a3; }
+    .badge.ok { background: #e8f7ef; color: var(--ok); border-color: #bfebd1; }
+    main {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) 240px;
+    }
+    .detail-head {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .detail-title { min-width: 0; }
+    .mesa { font-size: 15px; font-weight: 700; word-break: break-word; }
+    .paths { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .detail-actions {
+      display: grid;
+      justify-items: end;
+      gap: 7px;
+      min-width: 250px;
+    }
+    .nav-buttons { display: flex; align-items: center; gap: 6px; }
+    .nav-buttons button { min-height: 30px; padding: 0 9px; font-size: 12px; }
+    .pdf-grid {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--line);
+    }
+    .pdf-pane {
+      min-width: 0;
+      min-height: 0;
+      background: var(--panel);
+      display: grid;
+      grid-template-rows: 36px minmax(0, 1fr);
+    }
+    .pdf-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .pdf-title a { color: var(--accent); text-decoration: none; font-size: 12px; }
+    iframe { width: 100%; height: 100%; border: 0; background: #fdfdfd; }
+    .fields {
+      min-height: 0;
+      overflow: auto;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .field-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 40px;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      font-size: 13px;
+    }
+    .field-toolbar strong { white-space: nowrap; }
+    .field-note {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    th { position: sticky; top: 40px; background: var(--panel-2); z-index: 1; }
+    td.label { white-space: normal; min-width: 180px; }
+    .result-text { font-weight: 700; }
+    .result-text.numeric_mismatch { color: var(--danger); }
+    .result-text.ocr_uncertain { color: var(--warning); }
+    .mono { font-family: Consolas, "Courier New", monospace; font-size: 12px; }
+    tr.numeric_mismatch { background: var(--soft-danger); }
+    tr.ocr_uncertain { background: var(--soft-warning); }
+    tr.missing_field { background: #f4f1ff; }
+    tr.visual_mismatch { background: #eaf4ff; }
+    .empty { padding: 18px; color: var(--muted); font-size: 14px; }
+    @media (max-width: 1000px) {
+      body { overflow: auto; }
+      .shell { height: auto; min-height: calc(100vh - 56px); grid-template-columns: 1fr; }
+      aside { max-height: 380px; border-right: 0; border-bottom: 1px solid var(--line); }
+      main { grid-template-rows: auto 900px 260px; }
+      .pdf-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Comparador de fuentes E14</h1>
+    <div class="header-actions">
+      <a class="nav-link" href="/">Inconsistencias</a>
+      <button class="primary" id="refreshBtn">Recargar</button>
+    </div>
+  </header>
+  <div class="shell">
+    <aside>
+      <div class="filters">
+        <div class="metric-grid">
+          <div class="metric"><span class="metric-value" id="metricVisible">0</span><span class="metric-label">visibles</span></div>
+          <div class="metric"><span class="metric-value" id="metricFirm">0</span><span class="metric-label">diferencias firmes</span></div>
+          <div class="metric"><span class="metric-value" id="metricOcr">0</span><span class="metric-label">OCR dudoso</span></div>
+          <div class="metric"><span class="metric-value" id="metricMissing">0</span><span class="metric-label">campos faltantes</span></div>
+        </div>
+        <div class="section-title">Buscar</div>
+        <input id="searchInput" placeholder="Mesa, codigo o fuente">
+        <div class="section-title">Filtros</div>
+        <div class="filter-row">
+          <select id="statusFilter">
+            <option value="needs_review">Con hallazgos</option>
+            <option value="all">Todas</option>
+            <option value="match">Sin hallazgos</option>
+          </select>
+          <select id="resultFilter">
+            <option value="not_match">Diferencias</option>
+            <option value="numeric_mismatch">Diferencia firme</option>
+            <option value="ocr_uncertain">OCR dudoso</option>
+            <option value="missing_field">Campo faltante</option>
+            <option value="visual_mismatch">Visual</option>
+            <option value="all">Todos campos</option>
+          </select>
+        </div>
+        <div class="filter-row">
+          <select id="pairFilter">
+            <option value="all">Todas las fuentes</option>
+          </select>
+          <select id="fieldFilter">
+            <option value="all">Todos los campos</option>
+          </select>
+        </div>
+        <div class="filter-row">
+          <select id="sortFilter">
+            <option value="priority">Prioridad</option>
+            <option value="numeric">Mas diferencias firmes</option>
+            <option value="ocr">Mas OCR dudoso</option>
+            <option value="missing">Mas faltantes</option>
+            <option value="mesa">Mesa</option>
+            <option value="updated">Actualizadas</option>
+          </select>
+          <button class="ghost" id="clearBtn">Limpiar</button>
+        </div>
+        <div class="filter-row three">
+          <input id="minNumericInput" type="number" min="0" step="1" placeholder="Firmes min">
+          <input id="minOcrInput" type="number" min="0" step="1" placeholder="OCR min">
+          <input id="minMissingInput" type="number" min="0" step="1" placeholder="Faltantes min">
+        </div>
+        <div class="section-title">Reportes</div>
+        <div class="download-bar">
+          <button id="reportFieldsBtn">CSV hallazgos</button>
+          <button id="reportSummaryBtn">CSV resumen</button>
+        </div>
+        <div class="counter" id="counter">Cargando...</div>
+      </div>
+      <div class="list" id="list"></div>
+    </aside>
+    <main>
+      <section class="detail-head">
+        <div class="detail-title">
+          <div class="mesa" id="mesaTitle">Seleccione una comparacion</div>
+          <div class="paths" id="pathTitle"></div>
+        </div>
+        <div class="detail-actions">
+          <div class="nav-buttons">
+            <span class="counter" id="positionCounter"></span>
+            <button id="prevBtn">Anterior</button>
+            <button id="nextBtn">Siguiente</button>
+          </div>
+          <div class="badges" id="summaryBadges"></div>
+        </div>
+      </section>
+      <section class="pdf-grid">
+        <div class="pdf-pane">
+          <div class="pdf-title"><span id="sourceATitle">Fuente A</span><a id="openA" target="_blank" rel="noopener">Abrir</a></div>
+          <iframe id="pdfA"></iframe>
+        </div>
+        <div class="pdf-pane">
+          <div class="pdf-title"><span id="sourceBTitle">Fuente B</span><a id="openB" target="_blank" rel="noopener">Abrir</a></div>
+          <iframe id="pdfB"></iframe>
+        </div>
+      </section>
+      <section class="fields" id="fields"></section>
+    </main>
+  </div>
+  <script>
+    const state = { rows: [], currentId: null, detail: null, searchTimer: null };
+    const $ = (id) => document.getElementById(id);
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[char]));
+    }
+    function badge(text, kind = "") {
+      return `<span class="badge ${kind}">${escapeHtml(text)}</span>`;
+    }
+    function resultLabel(value) {
+      return {
+        numeric_mismatch: "diferencia firme",
+        ocr_uncertain: "OCR dudoso",
+        missing_field: "campo faltante",
+        visual_mismatch: "visual",
+        match: "igual"
+      }[value] || value;
+    }
+    function filterParams() {
+      const params = new URLSearchParams({
+        status: $("statusFilter").value,
+        result: $("resultFilter").value,
+        pair: $("pairFilter").value,
+        field: $("fieldFilter").value,
+        sort: $("sortFilter").value,
+        q: $("searchInput").value.trim(),
+      });
+      const minNumeric = $("minNumericInput").value.trim();
+      const minOcr = $("minOcrInput").value.trim();
+      const minMissing = $("minMissingInput").value.trim();
+      if (minNumeric) params.set("min_numeric", minNumeric);
+      if (minOcr) params.set("min_ocr", minOcr);
+      if (minMissing) params.set("min_missing", minMissing);
+      return params;
+    }
+    async function loadRows(keepCurrent = true) {
+      const params = filterParams();
+      const response = await fetch(`/comparaciones/data?${params.toString()}`);
+      if (!response.ok) throw new Error("No pude cargar comparaciones");
+      const payload = await response.json();
+      state.rows = payload.rows || [];
+      populateOptions(payload.options || {});
+      updateMetrics(payload);
+      renderList();
+      const stillThere = keepCurrent && state.rows.some((row) => row.id === state.currentId);
+      if (!stillThere) state.currentId = state.rows[0]?.id || null;
+      if (state.currentId) await loadDetail(state.currentId);
+      else renderEmpty();
+    }
+    function populateOptions(options) {
+      setOptions("pairFilter", options.pairs || [], "Todas las fuentes");
+      setOptions("fieldFilter", options.fields || [], "Todos los campos");
+    }
+    function setOptions(selectId, options, defaultLabel) {
+      const select = $(selectId);
+      const current = select.value || "all";
+      select.innerHTML = `<option value="all">${escapeHtml(defaultLabel)}</option>` + options.map((item) => (
+        `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)} (${item.count})</option>`
+      )).join("");
+      select.value = options.some((item) => item.value === current) ? current : "all";
+    }
+    function updateMetrics(payload) {
+      const filtered = payload.filtered || {};
+      const totals = payload.totals || {};
+      $("metricVisible").textContent = filtered.comparisons ?? state.rows.length;
+      $("metricFirm").textContent = filtered.numeric_mismatches ?? 0;
+      $("metricOcr").textContent = filtered.ocr_uncertain ?? 0;
+      $("metricMissing").textContent = filtered.missing_fields ?? 0;
+      $("counter").textContent = `${state.rows.length} visibles de ${totals.comparisons || 0} comparaciones`;
+    }
+    function renderList() {
+      $("list").innerHTML = state.rows.map((row) => {
+        const active = row.id === state.currentId ? " active" : "";
+        return `
+          <button class="item${active}" data-id="${row.id}">
+            <div class="item-title">${escapeHtml(row.mesa_key)}</div>
+            <div class="badges">
+              ${badge(`${row.source_a} vs ${row.source_b}`)}
+              ${row.numeric_mismatches ? badge(`${row.numeric_mismatches} firmes`, "danger") : ""}
+              ${row.ocr_uncertain ? badge(`${row.ocr_uncertain} OCR`, "warning") : ""}
+              ${row.missing_fields ? badge(`${row.missing_fields} faltantes`, "warning") : ""}
+              ${!row.numeric_mismatches && !row.ocr_uncertain && !row.missing_fields ? badge("sin hallazgos", "ok") : ""}
+            </div>
+            <div class="counter" style="margin-top:7px">${escapeHtml(row.updated_at || "")}</div>
+          </button>
+        `;
+      }).join("") || `<div class="empty">No hay comparaciones para este filtro.</div>`;
+      document.querySelectorAll(".item").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.currentId = Number(button.dataset.id);
+          renderList();
+          loadDetail(state.currentId).catch(showError);
+        });
+      });
+    }
+    async function loadDetail(id) {
+      const response = await fetch(`/comparaciones/detalle?id=${encodeURIComponent(id)}`);
+      if (!response.ok) throw new Error("No pude cargar el detalle");
+      state.detail = await response.json();
+      renderDetail();
+    }
+    function renderDetail() {
+      const detail = state.detail;
+      if (!detail) return renderEmpty();
+      const c = detail.comparison;
+      const a = detail.source_a;
+      const b = detail.source_b;
+      $("mesaTitle").textContent = c.mesa_key;
+      $("pathTitle").textContent = `${a.relative_path} | ${b.relative_path}`;
+      updatePosition();
+      $("summaryBadges").innerHTML = [
+        badge(`${c.source_a} vs ${c.source_b}`),
+        c.numeric_mismatches ? badge(`${c.numeric_mismatches} firmes`, "danger") : "",
+        c.ocr_uncertain ? badge(`${c.ocr_uncertain} OCR dudoso`, "warning") : "",
+        c.missing_fields ? badge(`${c.missing_fields} faltantes`, "warning") : "",
+        !c.numeric_mismatches && !c.ocr_uncertain && !c.missing_fields ? badge("sin hallazgos", "ok") : "",
+      ].join("");
+      $("sourceATitle").textContent = c.source_a;
+      $("sourceBTitle").textContent = c.source_b;
+      $("pdfA").src = a.pdf_url;
+      $("pdfB").src = b.pdf_url;
+      $("openA").href = a.pdf_url;
+      $("openB").href = b.pdf_url;
+      renderFields(detail.fields || []);
+    }
+    function updatePosition() {
+      const index = state.rows.findIndex((row) => row.id === state.currentId);
+      $("positionCounter").textContent = index >= 0 ? `${index + 1} / ${state.rows.length}` : "";
+      $("prevBtn").disabled = index <= 0;
+      $("nextBtn").disabled = index < 0 || index >= state.rows.length - 1;
+    }
+    function moveSelection(delta) {
+      const index = state.rows.findIndex((row) => row.id === state.currentId);
+      if (index < 0) return;
+      const next = state.rows[index + delta];
+      if (!next) return;
+      state.currentId = next.id;
+      renderList();
+      loadDetail(state.currentId).catch(showError);
+    }
+    function renderFields(fields) {
+      const filter = $("resultFilter").value;
+      const visible = fields.filter((row) => {
+        if (filter === "all") return true;
+        if (filter === "not_match") return row.result !== "match";
+        return row.result === filter;
+      });
+      if (!visible.length) {
+        $("fields").innerHTML = `<div class="empty">No hay campos para este filtro.</div>`;
+        return;
+      }
+      $("fields").innerHTML = `
+        <div class="field-toolbar">
+          <strong>${visible.length} campos</strong>
+          <span class="field-note">${escapeHtml(fieldSummary(visible))}</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Campo</th><th>Resultado</th><th>Valor A</th><th>Valor B</th>
+              <th>Conf A</th><th>Conf B</th><th>Visual</th><th>Motivo</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${visible.map((row) => `
+              <tr class="${escapeHtml(row.result)}">
+                <td class="label">${escapeHtml(row.field_label || row.field_key)}</td>
+                <td><span class="result-text ${escapeHtml(row.result)}">${escapeHtml(resultLabel(row.result))}</span></td>
+                <td class="mono">${escapeHtml(row.value_a ?? "")}</td>
+                <td class="mono">${escapeHtml(row.value_b ?? "")}</td>
+                <td>${formatNumber(row.confidence_a)}</td>
+                <td>${formatNumber(row.confidence_b)}</td>
+                <td>${formatNumber(row.visual_score)}</td>
+                <td class="label">${escapeHtml(reasonText(row))}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+    function fieldSummary(rows) {
+      const counts = rows.reduce((acc, row) => {
+        acc[row.result] = (acc[row.result] || 0) + 1;
+        return acc;
+      }, {});
+      return Object.entries(counts).map(([key, value]) => `${value} ${resultLabel(key)}`).join(" | ");
+    }
+    function reasonText(row) {
+      try {
+        const details = JSON.parse(row.details_json || "{}");
+        if (details.reason === "numeric_mismatch_but_visual_match") return "Valores distintos, recortes visualmente parecidos";
+        if (details.reason) return details.reason;
+        if (details.raw_a || details.raw_b) return `raw ${details.raw_a ?? ""} vs ${details.raw_b ?? ""}`;
+      } catch (_) {
+        return "";
+      }
+      return "";
+    }
+    function formatNumber(value) {
+      if (value === null || value === undefined || value === "") return "";
+      const number = Number(value);
+      if (!Number.isFinite(number)) return escapeHtml(value);
+      return number.toFixed(2);
+    }
+    function renderEmpty() {
+      $("mesaTitle").textContent = "Seleccione una comparacion";
+      $("pathTitle").textContent = "";
+      $("summaryBadges").innerHTML = "";
+      $("positionCounter").textContent = "";
+      $("prevBtn").disabled = true;
+      $("nextBtn").disabled = true;
+      $("pdfA").removeAttribute("src");
+      $("pdfB").removeAttribute("src");
+      $("openA").removeAttribute("href");
+      $("openB").removeAttribute("href");
+      $("fields").innerHTML = `<div class="empty">No hay detalle cargado.</div>`;
+    }
+    function showError(error) { $("counter").textContent = error.message || String(error); }
+    function clearFilters() {
+      $("searchInput").value = "";
+      $("statusFilter").value = "needs_review";
+      $("resultFilter").value = "not_match";
+      $("pairFilter").value = "all";
+      $("fieldFilter").value = "all";
+      $("sortFilter").value = "priority";
+      $("minNumericInput").value = "";
+      $("minOcrInput").value = "";
+      $("minMissingInput").value = "";
+      loadRows(false).catch(showError);
+    }
+    function downloadReport(kind) {
+      const params = filterParams();
+      params.set("kind", kind);
+      window.location.href = `/comparaciones/reporte?${params.toString()}`;
+    }
+    $("refreshBtn").addEventListener("click", () => loadRows(true).catch(showError));
+    ["statusFilter", "resultFilter", "pairFilter", "fieldFilter", "sortFilter", "minNumericInput", "minOcrInput", "minMissingInput"].forEach((id) => {
+      $(id).addEventListener("change", () => loadRows(false).catch(showError));
+    });
+    $("clearBtn").addEventListener("click", clearFilters);
+    $("reportFieldsBtn").addEventListener("click", () => downloadReport("fields"));
+    $("reportSummaryBtn").addEventListener("click", () => downloadReport("summary"));
+    $("prevBtn").addEventListener("click", () => moveSelection(-1));
+    $("nextBtn").addEventListener("click", () => moveSelection(1));
+    $("searchInput").addEventListener("input", () => {
+      clearTimeout(state.searchTimer);
+      state.searchTimer = setTimeout(() => loadRows(false).catch(showError), 250);
+    });
+    document.addEventListener("keydown", (event) => {
+      const tag = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : "";
+      if (["input", "select", "textarea"].includes(tag)) return;
+      if (event.key === "ArrowRight") moveSelection(1);
+      if (event.key === "ArrowLeft") moveSelection(-1);
+    });
+    loadRows(false).catch(showError);
+  </script>
+</body>
+</html>
+"""
+
+
+MESA_REVIEW_HTML = r"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Revisor de mesas E14</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --panel-2: #edf2f7;
+      --ink: #17202a;
+      --muted: #5f6b7a;
+      --line: #d6dde5;
+      --accent: #0b6bcb;
+      --accent-ink: #ffffff;
+      --danger: #b42318;
+      --warning: #986400;
+      --ok: #177245;
+      --soft-danger: #fff0ee;
+      --soft-warning: #fff6df;
+      --soft-ok: #e8f7ef;
+      --shadow: 0 1px 2px rgba(18, 31, 45, 0.08);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      overflow: hidden;
+      letter-spacing: 0;
+    }
+    header {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    button, select, input, textarea {
+      font: inherit;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+    }
+    button {
+      min-height: 34px;
+      padding: 0 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.48; cursor: default; }
+    select, input { height: 34px; padding: 0 10px; min-width: 0; }
+    textarea { width: 100%; min-height: 58px; padding: 8px 10px; resize: vertical; }
+    .top-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .nav-link {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+    .danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+    .ghost { background: #fff; color: var(--accent); border-color: var(--line); }
+    .shell {
+      height: calc(100vh - 58px);
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      min-height: 0;
+    }
+    aside {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .filters {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .section-title {
+      margin-top: 3px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .metric {
+      min-height: 58px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+    }
+    .metric-value { display: block; font-size: 19px; line-height: 1.1; font-weight: 700; }
+    .metric-label { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .counter { font-size: 12px; color: var(--muted); }
+    .list { min-height: 0; overflow: auto; padding: 8px; }
+    .item {
+      width: 100%;
+      display: block;
+      text-align: left;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      padding: 10px;
+      margin-bottom: 8px;
+      color: var(--ink);
+    }
+    .item.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(11, 107, 203, 0.12); }
+    .item-title { font-size: 13px; font-weight: 700; word-break: break-word; }
+    .item-meta { margin-top: 7px; font-size: 12px; color: var(--muted); }
+    .badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel-2);
+      font-size: 12px;
+      color: var(--ink);
+    }
+    .badge.danger { background: var(--soft-danger); color: var(--danger); border-color: #ffd2cc; }
+    .badge.warning { background: var(--soft-warning); color: var(--warning); border-color: #ffe1a3; }
+    .badge.ok { background: var(--soft-ok); color: var(--ok); border-color: #bfebd1; }
+    main {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) 265px;
+    }
+    .detail-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 390px;
+      gap: 14px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      min-height: 132px;
+    }
+    .mesa-title { font-weight: 700; font-size: 16px; word-break: break-word; }
+    .mesa-subtitle { margin-top: 4px; color: var(--muted); font-size: 12px; word-break: break-word; }
+    .review-box {
+      display: grid;
+      grid-template-rows: auto auto;
+      gap: 8px;
+      min-width: 0;
+    }
+    .review-buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .review-buttons button { min-width: 0; padding: 0 8px; font-size: 12px; }
+    .nav-buttons { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+    .nav-buttons button { min-height: 30px; padding: 0 9px; font-size: 12px; }
+    .pdf-grid {
+      min-height: 0;
+      display: grid;
+      gap: 1px;
+      background: var(--line);
+    }
+    .pdf-pane {
+      min-width: 0;
+      min-height: 0;
+      background: var(--panel);
+      display: grid;
+      grid-template-rows: 38px minmax(0, 1fr);
+    }
+    .pdf-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .pdf-title a { color: var(--accent); text-decoration: none; font-size: 12px; }
+    iframe { width: 100%; height: 100%; border: 0; background: #fdfdfd; }
+    .bottom {
+      min-height: 0;
+      overflow: auto;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .bottom-tabs {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      display: flex;
+      gap: 6px;
+      min-height: 42px;
+      align-items: center;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .bottom-tabs button { min-height: 30px; font-size: 12px; padding: 0 10px; }
+    .bottom-tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    th { position: sticky; top: 42px; background: var(--panel-2); z-index: 2; }
+    td.label { min-width: 180px; white-space: normal; }
+    .mono { font-family: Consolas, "Courier New", monospace; font-size: 12px; }
+    tr.numeric_mismatch { background: var(--soft-danger); }
+    tr.ocr_uncertain { background: var(--soft-warning); }
+    tr.missing_field { background: #f4f1ff; }
+    .empty { padding: 18px; color: var(--muted); }
+    @media (max-width: 1100px) {
+      body { overflow: auto; }
+      .shell { height: auto; grid-template-columns: 1fr; }
+      aside { max-height: 430px; border-right: 0; border-bottom: 1px solid var(--line); }
+      main { grid-template-rows: auto 900px 300px; }
+      .detail-head { grid-template-columns: 1fr; }
+      .pdf-grid { grid-template-columns: 1fr !important; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Revisor de mesas E14</h1>
+    <div class="top-actions">
+      <a class="nav-link" href="/inconsistencias">Inconsistencias OCR</a>
+      <button class="primary" id="refreshBtn">Recargar</button>
+    </div>
+  </header>
+  <div class="shell">
+    <aside>
+      <div class="filters">
+        <div class="metric-grid">
+          <div class="metric"><span class="metric-value" id="metricVisible">0</span><span class="metric-label">visibles</span></div>
+          <div class="metric"><span class="metric-value" id="metricPending">0</span><span class="metric-label">pendientes</span></div>
+          <div class="metric"><span class="metric-value" id="metricFirm">0</span><span class="metric-label">firmes</span></div>
+          <div class="metric"><span class="metric-value" id="metricOcr">0</span><span class="metric-label">OCR dudoso</span></div>
+        </div>
+        <div class="section-title">Alcance</div>
+        <select id="scopeFilter"></select>
+        <div class="filter-row">
+          <select id="reviewFilter">
+            <option value="pending">Pendientes</option>
+            <option value="reviewed">Revisadas</option>
+            <option value="fraud">Fraude</option>
+            <option value="ignored">Ignoradas</option>
+            <option value="all">Todas</option>
+          </select>
+          <select id="findingFilter">
+            <option value="all">Todos los hallazgos</option>
+            <option value="numeric_mismatch">Diferencia firme</option>
+            <option value="ocr_uncertain">OCR dudoso</option>
+            <option value="missing_field">Campo faltante</option>
+            <option value="internal_inconsistent">Inconsistencia interna</option>
+          </select>
+        </div>
+        <div class="filter-row">
+          <select id="fieldFilter"><option value="all">Todos los campos</option></select>
+          <select id="sortFilter">
+            <option value="priority">Prioridad</option>
+            <option value="mesa">Mesa</option>
+            <option value="numeric">Mas firmes</option>
+            <option value="ocr">Mas OCR dudoso</option>
+            <option value="updated">Actualizadas</option>
+          </select>
+        </div>
+        <input id="searchInput" placeholder="Mesa, departamento, municipio">
+        <div class="filter-row">
+          <button class="ghost" id="clearBtn">Limpiar</button>
+          <button id="reportBtn">CSV visible</button>
+        </div>
+        <div class="counter" id="counter">Cargando...</div>
+      </div>
+      <div class="list" id="list"></div>
+    </aside>
+    <main>
+      <section class="detail-head">
+        <div>
+          <div class="mesa-title" id="mesaTitle">Seleccione una mesa</div>
+          <div class="mesa-subtitle" id="mesaSubtitle"></div>
+          <div class="badges" id="mesaBadges"></div>
+          <div class="nav-buttons">
+            <span class="counter" id="positionCounter"></span>
+            <button id="prevBtn">Anterior</button>
+            <button id="nextBtn">Siguiente</button>
+          </div>
+        </div>
+        <div class="review-box">
+          <textarea id="reviewNote" placeholder="Nota de revision"></textarea>
+          <div class="review-buttons">
+            <button class="primary" id="reviewBtn">Revisado</button>
+            <button class="danger" id="fraudBtn">Fraude</button>
+            <button class="ghost" id="pendingBtn">Pendiente</button>
+          </div>
+        </div>
+      </section>
+      <section class="pdf-grid" id="pdfGrid"></section>
+      <section class="bottom">
+        <div class="bottom-tabs">
+          <button id="tabFindings" class="active">Hallazgos</button>
+          <button id="tabFields">Campos</button>
+          <button id="tabSources">Fuentes</button>
+        </div>
+        <div id="bottomContent"></div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const state = { rows: [], currentKey: null, detail: null, tab: "findings", searchTimer: null };
+    const $ = (id) => document.getElementById(id);
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[char]));
+    }
+    function badge(text, kind = "") {
+      return `<span class="badge ${kind}">${escapeHtml(text)}</span>`;
+    }
+    function scopeLabel(scope) {
+      if (!scope) return "";
+      if (scope.startsWith("source:")) return `Revision ${scope.split(":")[1]}`;
+      const pair = scope.replace("comparison:", "").split("|");
+      return `Revision ${pair[0]} vs ${pair[1]}`;
+    }
+    function activeScope() { return $("scopeFilter").value || "comparison:claveros|delegados"; }
+    function filterParams() {
+      const params = new URLSearchParams({
+        scope: activeScope(),
+        review: $("reviewFilter").value,
+        finding: $("findingFilter").value,
+        field: $("fieldFilter").value,
+        sort: $("sortFilter").value,
+        q: $("searchInput").value.trim(),
+      });
+      return params;
+    }
+    async function loadRows(keepCurrent = true) {
+      const response = await fetch(`/mesas/data?${filterParams().toString()}`);
+      if (!response.ok) throw new Error("No pude cargar mesas");
+      const payload = await response.json();
+      state.rows = payload.rows || [];
+      populateOptions(payload.options || {});
+      updateMetrics(payload);
+      renderList();
+      const stillThere = keepCurrent && state.rows.some((row) => row.row_key === state.currentKey);
+      if (!stillThere) state.currentKey = state.rows[0]?.row_key || null;
+      if (state.currentKey) await loadDetail(state.currentKey);
+      else renderEmpty();
+    }
+    function populateOptions(options) {
+      setOptions("scopeFilter", options.scopes || [], "comparison:claveros|delegados");
+      setOptions("fieldFilter", options.fields || [], "all");
+    }
+    function setOptions(selectId, options, fallback) {
+      const select = $(selectId);
+      const current = select.value || fallback;
+      select.innerHTML = options.map((item) => (
+        `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}${item.count !== undefined ? ` (${item.count})` : ""}</option>`
+      )).join("");
+      if (selectId === "fieldFilter") {
+        select.innerHTML = `<option value="all">Todos los campos</option>` + select.innerHTML;
+      }
+      select.value = [...select.options].some((opt) => opt.value === current) ? current : fallback;
+    }
+    function updateMetrics(payload) {
+      const f = payload.filtered || {};
+      $("metricVisible").textContent = f.rows ?? state.rows.length;
+      $("metricPending").textContent = f.pending ?? 0;
+      $("metricFirm").textContent = f.numeric_mismatches ?? 0;
+      $("metricOcr").textContent = f.ocr_uncertain ?? 0;
+      $("counter").textContent = `${state.rows.length} visibles`;
+    }
+    function renderList() {
+      $("list").innerHTML = state.rows.map((row) => {
+        const active = row.row_key === state.currentKey ? " active" : "";
+        return `
+          <button class="item${active}" data-key="${escapeHtml(row.row_key)}">
+            <div class="item-title">${escapeHtml(row.mesa_key)}</div>
+            <div class="badges">
+              ${badge(scopeLabel(row.scope))}
+              ${badge(`${row.source_count} fuente${row.source_count === 1 ? "" : "s"}`)}
+              ${row.review_status === "reviewed" ? badge("revisada", "ok") : ""}
+              ${row.review_status === "fraud" ? badge("fraude", "danger") : ""}
+              ${row.numeric_mismatches ? badge(`${row.numeric_mismatches} firmes`, "danger") : ""}
+              ${row.ocr_uncertain ? badge(`${row.ocr_uncertain} OCR`, "warning") : ""}
+              ${row.internal_inconsistent ? badge("interna", "warning") : ""}
+            </div>
+            <div class="item-meta">${escapeHtml(row.updated_at || "")}</div>
+          </button>
+        `;
+      }).join("") || `<div class="empty">No hay mesas para este filtro.</div>`;
+      document.querySelectorAll(".item").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.currentKey = button.dataset.key;
+          renderList();
+          loadDetail(state.currentKey).catch(showError);
+        });
+      });
+    }
+    async function loadDetail(rowKey) {
+      const row = state.rows.find((item) => item.row_key === rowKey);
+      if (!row) return renderEmpty();
+      const params = new URLSearchParams({mesa_key: row.mesa_key, scope: row.scope});
+      const response = await fetch(`/mesas/detalle?${params.toString()}`);
+      if (!response.ok) throw new Error("No pude cargar la mesa");
+      state.detail = await response.json();
+      renderDetail();
+    }
+    function renderDetail() {
+      const detail = state.detail;
+      if (!detail) return renderEmpty();
+      $("mesaTitle").textContent = detail.mesa_key;
+      $("mesaSubtitle").textContent = scopeLabel(detail.scope);
+      $("reviewNote").value = detail.review?.note || "";
+      $("mesaBadges").innerHTML = [
+        badge(detail.review?.status || "pending", detail.review?.status === "reviewed" ? "ok" : detail.review?.status === "fraud" ? "danger" : ""),
+        badge(`${detail.documents.length} fuente${detail.documents.length === 1 ? "" : "s"}`),
+        detail.summary.numeric_mismatches ? badge(`${detail.summary.numeric_mismatches} firmes`, "danger") : "",
+        detail.summary.ocr_uncertain ? badge(`${detail.summary.ocr_uncertain} OCR dudoso`, "warning") : "",
+        detail.summary.internal_inconsistent ? badge("interna", "warning") : "",
+      ].join("");
+      renderPdfGrid(detail.documents || []);
+      updatePosition();
+      renderBottom();
+    }
+    function renderPdfGrid(documents) {
+      const grid = $("pdfGrid");
+      const count = Math.max(1, Math.min(3, documents.length || 1));
+      grid.style.gridTemplateColumns = `repeat(${count}, minmax(0, 1fr))`;
+      grid.innerHTML = documents.map((doc) => `
+        <div class="pdf-pane">
+          <div class="pdf-title">
+            <span>${escapeHtml(doc.source_type)} ${badge(doc.status || "")}</span>
+            <a href="${escapeHtml(doc.pdf_url)}" target="_blank" rel="noopener">Abrir</a>
+          </div>
+          <iframe src="${escapeHtml(doc.pdf_url)}"></iframe>
+        </div>
+      `).join("") || `<div class="empty">No hay PDF disponible para esta mesa.</div>`;
+    }
+    function updatePosition() {
+      const index = state.rows.findIndex((row) => row.row_key === state.currentKey);
+      $("positionCounter").textContent = index >= 0 ? `${index + 1} / ${state.rows.length}` : "";
+      $("prevBtn").disabled = index <= 0;
+      $("nextBtn").disabled = index < 0 || index >= state.rows.length - 1;
+    }
+    function moveSelection(delta) {
+      const index = state.rows.findIndex((row) => row.row_key === state.currentKey);
+      const next = state.rows[index + delta];
+      if (!next) return;
+      state.currentKey = next.row_key;
+      renderList();
+      loadDetail(state.currentKey).catch(showError);
+    }
+    function setTab(tab) {
+      state.tab = tab;
+      $("tabFindings").classList.toggle("active", tab === "findings");
+      $("tabFields").classList.toggle("active", tab === "fields");
+      $("tabSources").classList.toggle("active", tab === "sources");
+      renderBottom();
+    }
+    function renderBottom() {
+      const detail = state.detail;
+      if (!detail) return;
+      if (state.tab === "sources") return renderSources(detail);
+      if (state.tab === "fields") return renderSourceFields(detail);
+      return renderFindings(detail);
+    }
+    function renderFindings(detail) {
+      const rows = detail.findings || [];
+      if (!rows.length) {
+        $("bottomContent").innerHTML = `<div class="empty">No hay hallazgos para este alcance.</div>`;
+        return;
+      }
+      $("bottomContent").innerHTML = `
+        <table><thead><tr><th>Campo</th><th>Resultado</th><th>A</th><th>B</th><th>Conf A</th><th>Conf B</th><th>Visual</th><th>Motivo</th></tr></thead>
+        <tbody>${rows.map((row) => `
+          <tr class="${escapeHtml(row.result)}">
+            <td class="label">${escapeHtml(row.field_label || row.field_key)}</td>
+            <td>${escapeHtml(resultLabel(row.result))}</td>
+            <td class="mono">${escapeHtml(row.value_a ?? "")}</td>
+            <td class="mono">${escapeHtml(row.value_b ?? "")}</td>
+            <td>${formatNumber(row.confidence_a)}</td>
+            <td>${formatNumber(row.confidence_b)}</td>
+            <td>${formatNumber(row.visual_score)}</td>
+            <td class="label">${escapeHtml(reasonText(row))}</td>
+          </tr>`).join("")}</tbody></table>`;
+    }
+    function renderSourceFields(detail) {
+      const rows = detail.source_fields || [];
+      if (!rows.length) {
+        $("bottomContent").innerHTML = `<div class="empty">No hay campos OCR para esta mesa.</div>`;
+        return;
+      }
+      $("bottomContent").innerHTML = `
+        <table><thead><tr><th>Fuente</th><th>Campo</th><th>Valor</th><th>Raw</th><th>Confianza</th></tr></thead>
+        <tbody>${rows.map((row) => `
+          <tr>
+            <td>${escapeHtml(row.source_type)}</td>
+            <td class="label">${escapeHtml(row.field_label || row.field_key)}</td>
+            <td class="mono">${escapeHtml(row.normalized_value ?? "")}</td>
+            <td class="mono">${escapeHtml(row.raw_text ?? "")}</td>
+            <td>${formatNumber(row.confidence)}</td>
+          </tr>`).join("")}</tbody></table>`;
+    }
+    function renderSources(detail) {
+      $("bottomContent").innerHTML = `
+        <table><thead><tr><th>Fuente</th><th>Estado OCR</th><th>Ruta</th></tr></thead>
+        <tbody>${detail.documents.map((doc) => `
+          <tr>
+            <td>${escapeHtml(doc.source_type)}</td>
+            <td>${escapeHtml(doc.status || "")}</td>
+            <td class="label">${escapeHtml(doc.relative_path || "")}</td>
+          </tr>`).join("")}</tbody></table>`;
+    }
+    function resultLabel(value) {
+      return {
+        numeric_mismatch: "diferencia firme",
+        ocr_uncertain: "OCR dudoso",
+        missing_field: "campo faltante",
+        visual_mismatch: "visual",
+        match: "igual",
+      }[value] || value;
+    }
+    function reasonText(row) {
+      try {
+        const details = JSON.parse(row.details_json || "{}");
+        if (details.reason === "numeric_mismatch_but_visual_match") return "Valores distintos, recortes similares";
+        if (details.reason) return details.reason;
+        if (details.raw_a || details.raw_b) return `raw ${details.raw_a ?? ""} vs ${details.raw_b ?? ""}`;
+      } catch (_) {}
+      return "";
+    }
+    function formatNumber(value) {
+      if (value === null || value === undefined || value === "") return "";
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(2) : escapeHtml(value);
+    }
+    function renderEmpty() {
+      $("mesaTitle").textContent = "Seleccione una mesa";
+      $("mesaSubtitle").textContent = "";
+      $("mesaBadges").innerHTML = "";
+      $("positionCounter").textContent = "";
+      $("reviewNote").value = "";
+      $("prevBtn").disabled = true;
+      $("nextBtn").disabled = true;
+      $("pdfGrid").innerHTML = `<div class="empty">No hay PDF cargado.</div>`;
+      $("bottomContent").innerHTML = `<div class="empty">No hay detalle cargado.</div>`;
+    }
+    async function saveReview(status) {
+      const detail = state.detail;
+      if (!detail) return;
+      const response = await fetch("/mesas/review", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          mesa_key: detail.mesa_key,
+          scope: detail.scope,
+          status,
+          note: $("reviewNote").value,
+        }),
+      });
+      if (!response.ok) throw new Error("No pude guardar la revision");
+      await loadRows(false);
+    }
+    function clearFilters() {
+      $("reviewFilter").value = "pending";
+      $("findingFilter").value = "all";
+      $("fieldFilter").value = "all";
+      $("sortFilter").value = "priority";
+      $("searchInput").value = "";
+      loadRows(false).catch(showError);
+    }
+    function downloadReport() {
+      window.location.href = `/mesas/reporte?${filterParams().toString()}`;
+    }
+    function showError(error) { $("counter").textContent = error.message || String(error); }
+    $("refreshBtn").addEventListener("click", () => loadRows(true).catch(showError));
+    ["scopeFilter", "reviewFilter", "findingFilter", "fieldFilter", "sortFilter"].forEach((id) => {
+      $(id).addEventListener("change", () => loadRows(false).catch(showError));
+    });
+    $("searchInput").addEventListener("input", () => {
+      clearTimeout(state.searchTimer);
+      state.searchTimer = setTimeout(() => loadRows(false).catch(showError), 250);
+    });
+    $("clearBtn").addEventListener("click", clearFilters);
+    $("reportBtn").addEventListener("click", downloadReport);
+    $("prevBtn").addEventListener("click", () => moveSelection(-1));
+    $("nextBtn").addEventListener("click", () => moveSelection(1));
+    $("reviewBtn").addEventListener("click", () => saveReview("reviewed").catch(showError));
+    $("fraudBtn").addEventListener("click", () => saveReview("fraud").catch(showError));
+    $("pendingBtn").addEventListener("click", () => saveReview("pending").catch(showError));
+    $("tabFindings").addEventListener("click", () => setTab("findings"));
+    $("tabFields").addEventListener("click", () => setTab("fields"));
+    $("tabSources").addEventListener("click", () => setTab("sources"));
+    document.addEventListener("keydown", (event) => {
+      const tag = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : "";
+      if (["input", "select", "textarea"].includes(tag)) return;
+      if (event.key === "ArrowRight") moveSelection(1);
+      if (event.key === "ArrowLeft") moveSelection(-1);
+      if (event.key.toLowerCase() === "r") saveReview("reviewed").catch(showError);
+    });
+    loadRows(false).catch(showError);
+  </script>
+</body>
+</html>
+"""
+
+
 @dataclass
 class AppState:
     inconsistencies: Path
@@ -1299,6 +2596,7 @@ class AppState:
     reviews: Path
     frauds: Path
     downloads_root: Path
+    source_db: Path
     lock: threading.Lock
     cache_signature: tuple[Any, ...] | None = None
     cache_payload: dict[str, Any] | None = None
@@ -1313,6 +2611,16 @@ def csv_rows(path: Path) -> list[dict[str, str]]:
         return []
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
         return list(csv.DictReader(handle))
+
+
+def connect_source_db(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def row_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {key: row[key] for key in row.keys()}
 
 
 def csv_signature(path: Path) -> tuple[str, int, int] | tuple[str, None, None]:
@@ -1727,6 +3035,808 @@ def document_snapshot(app: AppState, key: str) -> dict[str, Any] | None:
         return app.cache_documents.get(key)
 
 
+def init_review_status_schema(db_path: Path) -> None:
+    if not db_path.exists():
+        return
+    conn = connect_source_db(db_path)
+    try:
+        with conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS review_status (
+                    id INTEGER PRIMARY KEY,
+                    mesa_key TEXT NOT NULL,
+                    scope_type TEXT NOT NULL,
+                    source_a TEXT NOT NULL,
+                    source_b TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    note TEXT,
+                    reviewed_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(mesa_key, scope_type, source_a, source_b)
+                );
+                CREATE INDEX IF NOT EXISTS idx_review_status_scope
+                    ON review_status(scope_type, source_a, source_b, status);
+                CREATE INDEX IF NOT EXISTS idx_review_status_mesa
+                    ON review_status(mesa_key);
+                """
+            )
+    finally:
+        conn.close()
+
+
+def parse_review_scope(raw: str) -> tuple[str, str, str]:
+    if raw.startswith("source:"):
+        return "source", raw.split(":", 1)[1], ""
+    if raw.startswith("comparison:"):
+        pair = raw.split(":", 1)[1]
+        if "|" in pair:
+            source_a, source_b = pair.split("|", 1)
+            return "comparison", source_a, source_b
+    return "comparison", "claveros", "delegados"
+
+
+def review_scope_value(scope_type: str, source_a: str, source_b: str = "") -> str:
+    if scope_type == "source":
+        return f"source:{source_a}"
+    return f"comparison:{source_a}|{source_b}"
+
+
+def review_status_row(
+    conn: sqlite3.Connection,
+    mesa_key: str,
+    scope_type: str,
+    source_a: str,
+    source_b: str,
+) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT status, note, reviewed_at, updated_at
+        FROM review_status
+        WHERE mesa_key = ? AND scope_type = ? AND source_a = ? AND source_b = ?
+        """,
+        (mesa_key, scope_type, source_a, source_b or ""),
+    ).fetchone()
+    if row is None:
+        return {"status": "pending", "note": "", "reviewed_at": "", "updated_at": ""}
+    return row_dict(row)
+
+
+def upsert_review_status(
+    db_path: Path,
+    mesa_key: str,
+    scope_type: str,
+    source_a: str,
+    source_b: str,
+    status: str,
+    note: str,
+) -> dict[str, Any]:
+    init_review_status_schema(db_path)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    reviewed_at = now if status in {"reviewed", "fraud", "ignored"} else None
+    conn = connect_source_db(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO review_status (
+                    mesa_key, scope_type, source_a, source_b,
+                    status, note, reviewed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(mesa_key, scope_type, source_a, source_b) DO UPDATE SET
+                    status = excluded.status,
+                    note = excluded.note,
+                    reviewed_at = excluded.reviewed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (mesa_key, scope_type, source_a, source_b or "", status, note, reviewed_at, now),
+            )
+            return review_status_row(conn, mesa_key, scope_type, source_a, source_b)
+    finally:
+        conn.close()
+
+
+def mesa_review_options(conn: sqlite3.Connection) -> dict[str, Any]:
+    scopes: list[dict[str, Any]] = []
+    comparison_rows = conn.execute(
+        """
+        SELECT source_a, source_b, COUNT(*) AS count
+        FROM source_comparisons
+        GROUP BY source_a, source_b
+        ORDER BY source_a, source_b
+        """
+    ).fetchall()
+    for row in comparison_rows:
+        scopes.append(
+            {
+                "value": review_scope_value("comparison", row["source_a"], row["source_b"]),
+                "label": f"{row['source_a']} vs {row['source_b']}",
+                "count": row["count"],
+            }
+        )
+    source_rows = conn.execute(
+        """
+        SELECT source_type, COUNT(*) AS count
+        FROM source_documents
+        WHERE EXISTS (
+            SELECT 1 FROM source_document_results r
+            WHERE r.source_document_id = source_documents.id
+        )
+        GROUP BY source_type
+        ORDER BY source_type
+        """
+    ).fetchall()
+    for row in source_rows:
+        scopes.append(
+            {
+                "value": review_scope_value("source", row["source_type"]),
+                "label": f"Solo {row['source_type']}",
+                "count": row["count"],
+            }
+        )
+    field_rows = conn.execute(
+        """
+        SELECT field_key, MAX(field_label) AS field_label, COUNT(*) AS count
+        FROM (
+          SELECT field_key, field_label FROM source_field_results
+          UNION ALL
+          SELECT field_key, field_label FROM source_field_comparisons
+        )
+        GROUP BY field_key
+        ORDER BY field_key
+        """
+    ).fetchall()
+    fields = [
+        {
+            "value": row["field_key"],
+            "label": row["field_label"] or row["field_key"],
+            "count": row["count"],
+        }
+        for row in field_rows
+    ]
+    return {"scopes": scopes, "fields": fields}
+
+
+def mesa_review_rows(app: AppState, query: dict[str, list[str]], limit: int = 2000) -> dict[str, Any]:
+    if not app.source_db.exists():
+        return {"rows": [], "filtered": {}, "options": {"scopes": [], "fields": []}}
+    init_review_status_schema(app.source_db)
+    scope_type, source_a, source_b = parse_review_scope(query_value(query, "scope", "comparison:claveros|delegados"))
+    review_filter = query_value(query, "review", "pending")
+    finding_filter = query_value(query, "finding", "all")
+    field_filter = query_value(query, "field", "all")
+    search = query_value(query, "q", "").strip()
+    sort = query_value(query, "sort", "priority")
+
+    conn = connect_source_db(app.source_db)
+    try:
+        params: list[Any] = []
+        where: list[str] = []
+        if review_filter != "all":
+            if review_filter == "pending":
+                where.append("COALESCE(rs.status, 'pending') = 'pending'")
+            else:
+                where.append("COALESCE(rs.status, 'pending') = ?")
+                params.append(review_filter)
+        if search:
+            like = f"%{search}%"
+            where.append("(base.mesa_key LIKE ? OR base.relative_path LIKE ?)")
+            params.extend([like, like])
+
+        if scope_type == "source":
+            base_sql = """
+                SELECT sd.id AS item_id, sd.mesa_key, ? AS scope, 'source' AS scope_type,
+                       sd.source_type AS source_a, '' AS source_b,
+                       sd.relative_path, sd.updated_at, sd.status AS source_status,
+                       0 AS numeric_mismatches, 0 AS visual_mismatches,
+                       0 AS ocr_uncertain, 0 AS missing_fields,
+                       CASE WHEN sd.status = 'inconsistent' THEN 1 ELSE 0 END AS internal_inconsistent,
+                       (SELECT COUNT(*) FROM source_documents sx WHERE sx.mesa_key = sd.mesa_key) AS source_count
+                FROM source_documents sd
+                WHERE sd.source_type = ?
+                  AND EXISTS (SELECT 1 FROM source_document_results r WHERE r.source_document_id = sd.id)
+            """
+            base_params: list[Any] = [review_scope_value(scope_type, source_a, source_b), source_a]
+            if finding_filter == "internal_inconsistent":
+                where.append("base.internal_inconsistent = 1")
+            elif finding_filter in {"numeric_mismatch", "ocr_uncertain", "missing_field"}:
+                where.append("1 = 0")
+            if field_filter != "all":
+                where.append(
+                    "EXISTS (SELECT 1 FROM source_field_results f "
+                    "WHERE f.source_document_id = base.item_id AND f.field_key = ?)"
+                )
+                params.append(field_filter)
+        else:
+            base_sql = """
+                SELECT c.id AS item_id, c.mesa_key, ? AS scope, 'comparison' AS scope_type,
+                       c.source_a, c.source_b, '' AS relative_path, c.updated_at,
+                       c.status AS source_status, c.numeric_mismatches,
+                       c.visual_mismatches, c.ocr_uncertain, c.missing_fields,
+                       CASE WHEN EXISTS (
+                         SELECT 1 FROM source_documents sd
+                         WHERE sd.mesa_key = c.mesa_key
+                           AND sd.source_type IN (c.source_a, c.source_b)
+                           AND sd.status = 'inconsistent'
+                       ) THEN 1 ELSE 0 END AS internal_inconsistent,
+                       (SELECT COUNT(*) FROM source_documents sx WHERE sx.mesa_key = c.mesa_key) AS source_count
+                FROM source_comparisons c
+                WHERE c.source_a = ? AND c.source_b = ?
+            """
+            base_params = [review_scope_value(scope_type, source_a, source_b), source_a, source_b]
+            if finding_filter == "numeric_mismatch":
+                where.append("base.numeric_mismatches > 0")
+            elif finding_filter == "ocr_uncertain":
+                where.append("base.ocr_uncertain > 0")
+            elif finding_filter == "missing_field":
+                where.append("base.missing_fields > 0")
+            elif finding_filter == "internal_inconsistent":
+                where.append("base.internal_inconsistent = 1")
+            if field_filter != "all":
+                where.append(
+                    "EXISTS (SELECT 1 FROM source_field_comparisons f "
+                    "WHERE f.comparison_id = base.item_id AND f.field_key = ?)"
+                )
+                params.append(field_filter)
+
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        order_options = {
+            "priority": "base.numeric_mismatches DESC, base.ocr_uncertain DESC, base.internal_inconsistent DESC, base.mesa_key",
+            "mesa": "base.mesa_key",
+            "numeric": "base.numeric_mismatches DESC, base.mesa_key",
+            "ocr": "base.ocr_uncertain DESC, base.mesa_key",
+            "updated": "base.updated_at DESC, base.mesa_key",
+        }
+        order_sql = order_options.get(sort, order_options["priority"])
+        sql = f"""
+            WITH base AS ({base_sql})
+            SELECT base.*, COALESCE(rs.status, 'pending') AS review_status,
+                   COALESCE(rs.note, '') AS review_note,
+                   rs.reviewed_at, rs.updated_at AS review_updated_at
+            FROM base
+            LEFT JOIN review_status rs
+              ON rs.mesa_key = base.mesa_key
+             AND rs.scope_type = base.scope_type
+             AND rs.source_a = base.source_a
+             AND rs.source_b = base.source_b
+            {where_sql}
+            ORDER BY {order_sql}
+            LIMIT ?
+        """
+        rows = [row_dict(row) for row in conn.execute(sql, [*base_params, *params, limit]).fetchall()]
+        for row in rows:
+            row["row_key"] = f"{row['scope']}|{row['mesa_key']}"
+        filtered = {
+            "rows": len(rows),
+            "pending": sum(1 for row in rows if row.get("review_status") == "pending"),
+            "numeric_mismatches": sum(int(row.get("numeric_mismatches") or 0) for row in rows),
+            "ocr_uncertain": sum(int(row.get("ocr_uncertain") or 0) for row in rows),
+        }
+        options = mesa_review_options(conn)
+    finally:
+        conn.close()
+    return {"rows": rows, "filtered": filtered, "options": options}
+
+
+def mesa_review_detail(app: AppState, mesa_key: str, raw_scope: str) -> dict[str, Any] | None:
+    if not app.source_db.exists():
+        return None
+    init_review_status_schema(app.source_db)
+    scope_type, source_a, source_b = parse_review_scope(raw_scope)
+    conn = connect_source_db(app.source_db)
+    try:
+        documents = [
+            {
+                **row_dict(row),
+                "pdf_url": f"/mesas/pdf?doc_id={row['id']}",
+            }
+            for row in conn.execute(
+                """
+                SELECT id, source_type, status, relative_path, absolute_path, updated_at
+                FROM source_documents
+                WHERE mesa_key = ?
+                  AND EXISTS (
+                    SELECT 1 FROM source_document_results r
+                    WHERE r.source_document_id = source_documents.id
+                  )
+                ORDER BY CASE source_type
+                    WHEN 'claveros' THEN 0
+                    WHEN 'delegados' THEN 1
+                    WHEN 'transmision' THEN 2
+                    ELSE 3
+                  END,
+                  source_type
+                """,
+                (mesa_key,),
+            ).fetchall()
+        ]
+        source_fields = [
+            row_dict(row)
+            for row in conn.execute(
+                """
+                SELECT sd.source_type, f.field_key, f.field_label, f.raw_text,
+                       f.normalized_value, f.confidence
+                FROM source_field_results f
+                JOIN source_documents sd ON sd.id = f.source_document_id
+                WHERE sd.mesa_key = ?
+                ORDER BY sd.source_type, f.field_key
+                """,
+                (mesa_key,),
+            ).fetchall()
+        ]
+        findings: list[dict[str, Any]] = []
+        summary = {
+            "numeric_mismatches": 0,
+            "ocr_uncertain": 0,
+            "missing_fields": 0,
+            "internal_inconsistent": 0,
+        }
+        if scope_type == "comparison":
+            comparison = conn.execute(
+                """
+                SELECT * FROM source_comparisons
+                WHERE mesa_key = ? AND source_a = ? AND source_b = ?
+                """,
+                (mesa_key, source_a, source_b),
+            ).fetchone()
+            if comparison is not None:
+                comparison_dict = row_dict(comparison)
+                summary.update(
+                    {
+                        "numeric_mismatches": comparison_dict["numeric_mismatches"],
+                        "ocr_uncertain": comparison_dict["ocr_uncertain"],
+                        "missing_fields": comparison_dict["missing_fields"],
+                    }
+                )
+                findings = [
+                    row_dict(row)
+                    for row in conn.execute(
+                        """
+                        SELECT field_key, field_label, value_a, value_b,
+                               confidence_a, confidence_b, visual_score, result,
+                               details_json
+                        FROM source_field_comparisons
+                        WHERE comparison_id = ? AND result != 'match'
+                        ORDER BY CASE result
+                            WHEN 'numeric_mismatch' THEN 0
+                            WHEN 'ocr_uncertain' THEN 1
+                            WHEN 'missing_field' THEN 2
+                            ELSE 3
+                          END,
+                          field_key
+                        """,
+                        (comparison_dict["id"],),
+                    ).fetchall()
+                ]
+        internal_rows = conn.execute(
+            """
+            SELECT sd.source_type, r.inconsistencies_json
+            FROM source_document_results r
+            JOIN source_documents sd ON sd.id = r.source_document_id
+            WHERE sd.mesa_key = ?
+            """,
+            (mesa_key,),
+        ).fetchall()
+        for row in internal_rows:
+            try:
+                issues = json.loads(row["inconsistencies_json"] or "[]")
+            except json.JSONDecodeError:
+                issues = []
+            if issues:
+                summary["internal_inconsistent"] = 1
+            if scope_type == "source" and row["source_type"] == source_a:
+                for issue in issues:
+                    details = issue.get("details", {}) if isinstance(issue, dict) else {}
+                    findings.append(
+                        {
+                            "field_key": details.get("field", ""),
+                            "field_label": details.get("field", issue.get("code", "") if isinstance(issue, dict) else ""),
+                            "value_a": "",
+                            "value_b": "",
+                            "confidence_a": details.get("confidence"),
+                            "confidence_b": None,
+                            "visual_score": None,
+                            "result": "internal_inconsistent",
+                            "details_json": json.dumps(issue, ensure_ascii=False),
+                        }
+                    )
+        review = review_status_row(conn, mesa_key, scope_type, source_a, source_b)
+    finally:
+        conn.close()
+    return {
+        "mesa_key": mesa_key,
+        "scope": review_scope_value(scope_type, source_a, source_b),
+        "documents": documents,
+        "findings": findings,
+        "source_fields": source_fields,
+        "summary": summary,
+        "review": review,
+    }
+
+
+def mesa_review_report_csv(app: AppState, query: dict[str, list[str]]) -> tuple[bytes, str]:
+    payload = mesa_review_rows(app, query, limit=100000)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "mesa_key",
+            "scope",
+            "review_status",
+            "numeric_mismatches",
+            "ocr_uncertain",
+            "missing_fields",
+            "internal_inconsistent",
+            "source_count",
+            "updated_at",
+            "review_note",
+        ]
+    )
+    for row in payload.get("rows", []):
+        writer.writerow(
+            [
+                row.get("mesa_key", ""),
+                row.get("scope", ""),
+                row.get("review_status", ""),
+                row.get("numeric_mismatches", 0),
+                row.get("ocr_uncertain", 0),
+                row.get("missing_fields", 0),
+                row.get("internal_inconsistent", 0),
+                row.get("source_count", 0),
+                row.get("updated_at", ""),
+                row.get("review_note", ""),
+            ]
+        )
+    return output.getvalue().encode("utf-8-sig"), "mesas_filtradas.csv"
+
+
+def query_value(query: dict[str, list[str]], key: str, default: str = "") -> str:
+    return query.get(key, [default])[0]
+
+
+def query_int(query: dict[str, list[str]], key: str, default: int = 0) -> int:
+    try:
+        return int(query_value(query, key, str(default)) or default)
+    except ValueError:
+        return default
+
+
+def comparison_filter_sql(query: dict[str, list[str]]) -> tuple[str, list[Any]]:
+    status = query_value(query, "status", "needs_review")
+    result = query_value(query, "result", "not_match")
+    field_key = query_value(query, "field", "all")
+    source_pair = query_value(query, "pair", "all")
+    search = query_value(query, "q", "").strip()
+    min_numeric = query_int(query, "min_numeric", 0)
+    min_ocr = query_int(query, "min_ocr", 0)
+    min_missing = query_int(query, "min_missing", 0)
+
+    where = []
+    params: list[Any] = []
+    if status != "all":
+        where.append("c.status = ?")
+        params.append(status)
+    if source_pair != "all" and "|" in source_pair:
+        source_a, source_b = source_pair.split("|", 1)
+        where.append("c.source_a = ? AND c.source_b = ?")
+        params.extend([source_a, source_b])
+    if min_numeric > 0:
+        where.append("c.numeric_mismatches >= ?")
+        params.append(min_numeric)
+    if min_ocr > 0:
+        where.append("c.ocr_uncertain >= ?")
+        params.append(min_ocr)
+    if min_missing > 0:
+        where.append("c.missing_fields >= ?")
+        params.append(min_missing)
+    if result == "not_match":
+        where.append(
+            "EXISTS (SELECT 1 FROM source_field_comparisons f "
+            "WHERE f.comparison_id = c.id AND f.result != 'match')"
+        )
+    elif result not in ("all", ""):
+        where.append(
+            "EXISTS (SELECT 1 FROM source_field_comparisons f "
+            "WHERE f.comparison_id = c.id AND f.result = ?)"
+        )
+        params.append(result)
+    if field_key != "all":
+        where.append(
+            "EXISTS (SELECT 1 FROM source_field_comparisons f "
+            "WHERE f.comparison_id = c.id AND f.field_key = ?)"
+        )
+        params.append(field_key)
+    if search:
+        like = f"%{search}%"
+        where.append("(c.mesa_key LIKE ? OR c.source_a LIKE ? OR c.source_b LIKE ?)")
+        params.extend([like, like, like])
+
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    return where_sql, params
+
+
+def comparison_order_sql(query: dict[str, list[str]]) -> str:
+    sort = query_value(query, "sort", "priority")
+    options = {
+        "priority": (
+            "CASE c.status WHEN 'needs_review' THEN 0 ELSE 1 END, "
+            "c.numeric_mismatches DESC, c.ocr_uncertain DESC, c.missing_fields DESC, c.mesa_key"
+        ),
+        "mesa": "c.mesa_key",
+        "numeric": "c.numeric_mismatches DESC, c.ocr_uncertain DESC, c.mesa_key",
+        "ocr": "c.ocr_uncertain DESC, c.numeric_mismatches DESC, c.mesa_key",
+        "missing": "c.missing_fields DESC, c.mesa_key",
+        "updated": "c.updated_at DESC, c.mesa_key",
+    }
+    return options.get(sort, options["priority"])
+
+
+def comparison_options(conn: sqlite3.Connection) -> dict[str, Any]:
+    pairs = [
+        {
+            "value": f"{row['source_a']}|{row['source_b']}",
+            "label": f"{row['source_a']} vs {row['source_b']}",
+            "count": row["count"],
+        }
+        for row in conn.execute(
+            """
+            SELECT source_a, source_b, COUNT(*) AS count
+            FROM source_comparisons
+            GROUP BY source_a, source_b
+            ORDER BY source_a, source_b
+            """
+        ).fetchall()
+    ]
+    fields = [
+        {
+            "value": row["field_key"],
+            "label": row["field_label"] or row["field_key"],
+            "count": row["count"],
+        }
+        for row in conn.execute(
+            """
+            SELECT field_key, MAX(field_label) AS field_label, COUNT(*) AS count
+            FROM source_field_comparisons
+            GROUP BY field_key
+            ORDER BY field_key
+            """
+        ).fetchall()
+    ]
+    return {"pairs": pairs, "fields": fields}
+
+
+def comparison_data_snapshot(app: AppState, query: dict[str, list[str]]) -> dict[str, Any]:
+    if not app.source_db.exists():
+        return {"rows": [], "totals": {"comparisons": 0}, "filtered": {"comparisons": 0}, "options": {}}
+
+    where_sql, params = comparison_filter_sql(query)
+    limit = max(1, min(query_int(query, "limit", 1000), 5000))
+    sql = f"""
+        SELECT c.id, c.mesa_key, c.source_a, c.source_b, c.status,
+               c.numeric_mismatches, c.visual_mismatches, c.ocr_uncertain,
+               c.missing_fields, c.updated_at
+        FROM source_comparisons c
+        {where_sql}
+        ORDER BY {comparison_order_sql(query)}
+        LIMIT ?
+    """
+    conn = connect_source_db(app.source_db)
+    try:
+        rows = [row_dict(row) for row in conn.execute(sql, [*params, limit]).fetchall()]
+        filtered = row_dict(
+            conn.execute(
+                f"""
+                SELECT COUNT(*) AS comparisons,
+                       COALESCE(SUM(numeric_mismatches), 0) AS numeric_mismatches,
+                       COALESCE(SUM(ocr_uncertain), 0) AS ocr_uncertain,
+                       COALESCE(SUM(missing_fields), 0) AS missing_fields
+                FROM source_comparisons c
+                {where_sql}
+                """,
+                params,
+            ).fetchone()
+        )
+        totals = row_dict(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS comparisons,
+                       COALESCE(SUM(numeric_mismatches), 0) AS numeric_mismatches,
+                       COALESCE(SUM(ocr_uncertain), 0) AS ocr_uncertain,
+                       COALESCE(SUM(missing_fields), 0) AS missing_fields
+                FROM source_comparisons
+                """
+            ).fetchone()
+        )
+        options = comparison_options(conn)
+    finally:
+        conn.close()
+    return {"rows": rows, "totals": totals, "filtered": filtered, "options": options}
+
+
+def comparison_report_csv(app: AppState, query: dict[str, list[str]]) -> tuple[bytes, str]:
+    where_sql, params = comparison_filter_sql(query)
+    kind = query_value(query, "kind", "fields")
+    result = query_value(query, "result", "not_match")
+    field_key = query_value(query, "field", "all")
+    output = io.StringIO()
+    writer = csv.writer(output)
+    conn = connect_source_db(app.source_db)
+    try:
+        if kind == "summary":
+            rows = conn.execute(
+                f"""
+                SELECT c.mesa_key, c.source_a, c.source_b, c.status,
+                       c.numeric_mismatches, c.visual_mismatches, c.ocr_uncertain,
+                       c.missing_fields, c.summary_json, c.updated_at
+                FROM source_comparisons c
+                {where_sql}
+                ORDER BY {comparison_order_sql(query)}
+                """,
+                params,
+            ).fetchall()
+            writer.writerow(
+                [
+                    "mesa_key",
+                    "source_a",
+                    "source_b",
+                    "status",
+                    "numeric_mismatches",
+                    "visual_mismatches",
+                    "ocr_uncertain",
+                    "missing_fields",
+                    "summary_json",
+                    "updated_at",
+                ]
+            )
+            for row in rows:
+                writer.writerow([row[key] for key in row.keys()])
+            return output.getvalue().encode("utf-8-sig"), "comparaciones_filtradas.csv"
+
+        field_where = []
+        field_params: list[Any] = []
+        if result == "not_match":
+            field_where.append("f.result != 'match'")
+        elif result not in ("all", ""):
+            field_where.append("f.result = ?")
+            field_params.append(result)
+        if field_key != "all":
+            field_where.append("f.field_key = ?")
+            field_params.append(field_key)
+        if field_where and where_sql:
+            field_filter_sql = f" AND {' AND '.join(field_where)}"
+        elif field_where:
+            field_filter_sql = f"WHERE {' AND '.join(field_where)}"
+        else:
+            field_filter_sql = ""
+        rows = conn.execute(
+            f"""
+            SELECT c.mesa_key, c.source_a, c.source_b, c.status AS comparison_status,
+                   f.field_key, f.field_label, f.value_a, f.value_b,
+                   f.confidence_a, f.confidence_b, f.visual_score,
+                   f.result, f.details_json
+            FROM source_field_comparisons f
+            JOIN source_comparisons c ON c.id = f.comparison_id
+            {where_sql}
+            {field_filter_sql}
+            ORDER BY {comparison_order_sql(query)}, f.result, f.field_key
+            """,
+            [*params, *field_params],
+        ).fetchall()
+        writer.writerow(
+            [
+                "mesa_key",
+                "source_a",
+                "source_b",
+                "comparison_status",
+                "field_key",
+                "field_label",
+                "value_a",
+                "value_b",
+                "confidence_a",
+                "confidence_b",
+                "visual_score",
+                "result",
+                "details_json",
+            ]
+        )
+        for row in rows:
+            writer.writerow([row[key] for key in row.keys()])
+    finally:
+        conn.close()
+    return output.getvalue().encode("utf-8-sig"), "hallazgos_filtrados.csv"
+
+
+def comparison_detail_snapshot(app: AppState, comparison_id: int) -> dict[str, Any] | None:
+    if not app.source_db.exists():
+        return None
+
+    conn = connect_source_db(app.source_db)
+    try:
+        row = conn.execute(
+            """
+            SELECT c.*, a.relative_path AS a_relative_path, a.absolute_path AS a_absolute_path,
+                   b.relative_path AS b_relative_path, b.absolute_path AS b_absolute_path
+            FROM source_comparisons c
+            JOIN source_documents a ON a.id = c.source_document_a_id
+            JOIN source_documents b ON b.id = c.source_document_b_id
+            WHERE c.id = ?
+            """,
+            (comparison_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        comparison = row_dict(row)
+        fields = [
+            row_dict(field)
+            for field in conn.execute(
+                """
+                SELECT field_key, field_label, value_a, value_b,
+                       confidence_a, confidence_b, visual_score, result,
+                       details_json
+                FROM source_field_comparisons
+                WHERE comparison_id = ?
+                ORDER BY CASE result
+                    WHEN 'numeric_mismatch' THEN 0
+                    WHEN 'ocr_uncertain' THEN 1
+                    WHEN 'missing_field' THEN 2
+                    WHEN 'visual_mismatch' THEN 3
+                    ELSE 4
+                  END,
+                  field_key
+                """,
+                (comparison_id,),
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    source_a_id = int(comparison["source_document_a_id"])
+    source_b_id = int(comparison["source_document_b_id"])
+    return {
+        "comparison": {
+            "id": comparison["id"],
+            "mesa_key": comparison["mesa_key"],
+            "source_a": comparison["source_a"],
+            "source_b": comparison["source_b"],
+            "status": comparison["status"],
+            "numeric_mismatches": comparison["numeric_mismatches"],
+            "visual_mismatches": comparison["visual_mismatches"],
+            "ocr_uncertain": comparison["ocr_uncertain"],
+            "missing_fields": comparison["missing_fields"],
+            "updated_at": comparison["updated_at"],
+        },
+        "source_a": {
+            "id": source_a_id,
+            "relative_path": comparison["a_relative_path"],
+            "absolute_path": comparison["a_absolute_path"],
+            "pdf_url": f"/comparaciones/pdf?doc_id={source_a_id}",
+        },
+        "source_b": {
+            "id": source_b_id,
+            "relative_path": comparison["b_relative_path"],
+            "absolute_path": comparison["b_absolute_path"],
+            "pdf_url": f"/comparaciones/pdf?doc_id={source_b_id}",
+        },
+        "fields": fields,
+    }
+
+
+def source_document_path(app: AppState, document_id: int) -> Path | None:
+    if not app.source_db.exists():
+        return None
+    conn = connect_source_db(app.source_db)
+    try:
+        row = conn.execute(
+            "SELECT absolute_path FROM source_documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return Path(row["absolute_path"])
+
+
 def is_under(path: Path, parent: Path) -> bool:
     try:
         path.resolve().relative_to(parent.resolve())
@@ -1741,7 +3851,83 @@ class ReviewHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/":
+            self.respond_html(MESA_REVIEW_HTML)
+            return
+        if parsed.path == "/inconsistencias":
             self.respond_html(HTML)
+            return
+        if parsed.path == "/comparaciones":
+            self.respond_redirect("/")
+            return
+        if parsed.path == "/mesas/data":
+            query = urllib.parse.parse_qs(parsed.query)
+            self.respond_json(mesa_review_rows(self.app, query))
+            return
+        if parsed.path == "/mesas/detalle":
+            query = urllib.parse.parse_qs(parsed.query)
+            mesa_key = query.get("mesa_key", [""])[0]
+            scope = query.get("scope", ["comparison:claveros|delegados"])[0]
+            if not mesa_key:
+                self.send_error(400, "Falta mesa_key")
+                return
+            detail = mesa_review_detail(self.app, mesa_key, scope)
+            if detail is None:
+                self.send_error(404)
+                return
+            self.respond_json(detail)
+            return
+        if parsed.path == "/mesas/reporte":
+            query = urllib.parse.parse_qs(parsed.query)
+            data, filename = mesa_review_report_csv(self.app, query)
+            self.respond_csv(data, filename)
+            return
+        if parsed.path == "/mesas/pdf":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                document_id = int(query.get("doc_id", ["0"])[0])
+            except ValueError:
+                self.send_error(400)
+                return
+            document_path = source_document_path(self.app, document_id)
+            if document_path is None:
+                self.send_error(404)
+                return
+            self.respond_project_file(document_path, [DEFAULT_SOURCE_DOWNLOADS])
+            return
+        if parsed.path == "/comparaciones/data":
+            query = urllib.parse.parse_qs(parsed.query)
+            self.respond_json(comparison_data_snapshot(self.app, query))
+            return
+        if parsed.path == "/comparaciones/reporte":
+            query = urllib.parse.parse_qs(parsed.query)
+            data, filename = comparison_report_csv(self.app, query)
+            self.respond_csv(data, filename)
+            return
+        if parsed.path == "/comparaciones/detalle":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                comparison_id = int(query.get("id", ["0"])[0])
+            except ValueError:
+                self.send_error(400)
+                return
+            comparison = comparison_detail_snapshot(self.app, comparison_id)
+            if comparison is None:
+                self.send_error(404)
+                return
+            self.respond_json(comparison)
+            return
+        if parsed.path == "/comparaciones/pdf":
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                document_id = int(query.get("doc_id", ["0"])[0])
+            except ValueError:
+                self.send_error(400)
+                return
+            document_path = source_document_path(self.app, document_id)
+            if document_path is None:
+                self.send_error(404)
+                return
+            self.respond_project_file(document_path, [DEFAULT_SOURCE_DOWNLOADS])
             return
         if parsed.path == "/data":
             query = urllib.parse.parse_qs(parsed.query)
@@ -1773,6 +3959,9 @@ class ReviewHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/mesas/review":
+            self.handle_mesa_review()
+            return
         if parsed.path == "/review":
             self.handle_review()
             return
@@ -1780,6 +3969,30 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self.handle_fraud()
             return
         self.send_error(404)
+
+    def handle_mesa_review(self) -> None:
+        payload = self.read_json()
+        mesa_key = str(payload.get("mesa_key", ""))
+        scope = str(payload.get("scope", "comparison:claveros|delegados"))
+        status = str(payload.get("status", "pending"))
+        note = str(payload.get("note", ""))
+        if not mesa_key:
+            self.send_error(400, "Falta mesa_key")
+            return
+        if status not in {"pending", "reviewed", "fraud", "ignored"}:
+            self.send_error(400, "Estado invalido")
+            return
+        scope_type, source_a, source_b = parse_review_scope(scope)
+        review = upsert_review_status(
+            self.app.source_db,
+            mesa_key,
+            scope_type,
+            source_a,
+            source_b,
+            status,
+            note,
+        )
+        self.respond_json({"review": review})
 
     def handle_review(self) -> None:
         payload = self.read_json()
@@ -1846,6 +4059,12 @@ class ReviewHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def respond_redirect(self, location: str) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def respond_json(self, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         accepts_gzip = "gzip" in self.headers.get("Accept-Encoding", "").lower()
@@ -1856,6 +4075,15 @@ class ReviewHandler(BaseHTTPRequestHandler):
         self.send_header("Vary", "Accept-Encoding")
         if accepts_gzip:
             self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def respond_csv(self, data: bytes, filename: str) -> None:
+        encoded_filename = urllib.parse.quote(filename, safe="")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f"attachment; filename=\"{filename}\"; filename*=UTF-8''{encoded_filename}")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -1966,6 +4194,7 @@ def create_server(host: str, port: int) -> ReviewServer:
 
 
 def serve(args: argparse.Namespace) -> None:
+    init_review_status_schema(args.source_db.resolve())
     app_state = AppState(
         inconsistencies=args.inconsistencies.resolve(),
         summary=args.summary.resolve(),
@@ -1973,6 +4202,7 @@ def serve(args: argparse.Namespace) -> None:
         reviews=args.reviews.resolve(),
         frauds=args.frauds.resolve(),
         downloads_root=args.downloads_root.resolve(),
+        source_db=args.source_db.resolve(),
         lock=threading.Lock(),
     )
     try:
@@ -1987,6 +4217,7 @@ def serve(args: argparse.Namespace) -> None:
     print(f"Reviews: {app_state.reviews}")
     print(f"Fraude: {app_state.frauds}")
     print(f"PDFs: {app_state.downloads_root}")
+    print(f"Comparaciones DB: {app_state.source_db}")
     if args.open_browser:
         webbrowser.open(url)
     try:
@@ -2005,6 +4236,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reviews", type=Path, default=DEFAULT_REVIEWS)
     parser.add_argument("--frauds", type=Path, default=DEFAULT_FRAUDS)
     parser.add_argument("--downloads-root", type=Path, default=DEFAULT_DOWNLOADS)
+    parser.add_argument("--source-db", type=Path, default=DEFAULT_SOURCE_DB)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-open", dest="open_browser", action="store_false")
