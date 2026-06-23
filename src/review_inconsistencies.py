@@ -22,7 +22,7 @@ DEFAULT_SUMMARY = ROOT / "reports" / "ocr" / "resumen.csv"
 DEFAULT_FIELDS = ROOT / "reports" / "ocr" / "campos.csv"
 DEFAULT_REVIEWS = ROOT / "reports" / "ocr" / "revision_inconsistencias.csv"
 DEFAULT_FRAUDS = ROOT / "reports" / "ocr" / "fraude_reportado.csv"
-DEFAULT_DOWNLOADS = ROOT / "downloads" / "E14"
+DEFAULT_DOWNLOADS = ROOT / "downloads" / "E14" / "claveros"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8010
 

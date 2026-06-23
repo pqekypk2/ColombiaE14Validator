@@ -41,7 +41,7 @@ El archivo `config/e14_rois.json` si se conserva porque define las regiones de l
 - Python 3.11 o superior.
 - Windows, Linux o macOS. El flujo se ha usado principalmente en Windows.
 - Dependencias de `requirements.txt`.
-- PDFs E14 ya disponibles en disco, por defecto en `downloads/E14/`.
+- PDFs E14 Claveros ya disponibles en disco, por defecto en `downloads/E14/claveros/`.
 
 Puede descargar un paquete de E14 desde:
 
@@ -57,7 +57,7 @@ python -m pip install -r requirements.txt
 
 ## Flujo rapido
 
-1. Coloque los PDFs localmente, por ejemplo en `downloads/E14/`.
+1. Coloque los PDFs de Claveros localmente, por ejemplo en `downloads/E14/claveros/`.
 2. Inicialice la base local:
 
 ```powershell
@@ -67,7 +67,7 @@ python .\src\analyze_e14.py init-db
 3. Descubra PDFs desde disco:
 
 ```powershell
-python .\src\analyze_e14.py discover --root .\downloads\E14
+python .\src\analyze_e14.py discover --root .\downloads\E14\claveros
 ```
 
 4. Genere recortes de entrenamiento:
@@ -128,6 +128,10 @@ state/
 logs/
 data/
 ```
+
+## Fuentes E14
+
+El flujo OCR actual trabaja por defecto sobre los PDFs E14 de Claveros en `downloads/E14/claveros/`. Mantenga otras fuentes en carpetas separadas, por ejemplo `downloads/E14/delegados/` y `downloads/E14/transmision/`, para permitir una futura validacion cruzada entre Claveros, Delegados y Transmision sin mezclar evidencias en disco.
 
 ## Preparacion antes de publicar
 

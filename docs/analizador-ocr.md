@@ -4,7 +4,7 @@
 
 ## Entradas locales
 
-- PDFs E14 en `downloads/E14/` o en la ruta indicada con `--root`.
+- PDFs E14 de Claveros en `downloads/E14/claveros/` o en la ruta indicada con `--root`.
 - Configuracion de regiones OCR en `config/e14_rois.json`.
 - Modelo entrenado opcional en `reports/ocr/model/digit_cnn.pt`.
 
@@ -23,13 +23,13 @@ python .\src\analyze_e14.py init-db
 Registrar PDFs desde disco:
 
 ```powershell
-python .\src\analyze_e14.py discover --root .\downloads\E14
+python .\src\analyze_e14.py discover --root .\downloads\E14\claveros
 ```
 
 Si necesita detectar cambios exactos de archivo:
 
 ```powershell
-python .\src\analyze_e14.py discover --root .\downloads\E14 --hash-files
+python .\src\analyze_e14.py discover --root .\downloads\E14\claveros --hash-files
 ```
 
 ## Verificacion de entorno

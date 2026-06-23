@@ -22,7 +22,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / "state" / "e14.sqlite"
 DEFAULT_CONFIG = ROOT / "config" / "e14_rois.json"
-DEFAULT_DOWNLOAD_ROOT = ROOT / "downloads" / "E14"
+DEFAULT_DOWNLOAD_ROOT = ROOT / "downloads" / "E14" / "claveros"
 DEFAULT_REPORT_DIR = ROOT / "reports" / "ocr"
 DEFAULT_MODEL_PATH = DEFAULT_REPORT_DIR / "model" / "digit_cnn.pt"
 

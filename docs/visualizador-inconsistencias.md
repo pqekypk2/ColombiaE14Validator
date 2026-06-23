@@ -9,7 +9,7 @@ Por defecto lee:
 - `reports/ocr/inconsistencias.csv`
 - `reports/ocr/resumen.csv`
 - `reports/ocr/campos.csv`
-- PDFs desde `downloads/E14/`
+- PDFs de Claveros desde `downloads/E14/claveros/`
 
 Archivos de estado generados:
 
@@ -46,7 +46,7 @@ Opciones utiles:
 
 ```powershell
 python .\src\review_inconsistencies.py --host 127.0.0.1 --port 8010
-python .\src\review_inconsistencies.py --downloads-root .\downloads\E14 --no-open
+python .\src\review_inconsistencies.py --downloads-root .\downloads\E14\claveros --no-open
 ```
 
 ## Funciones
