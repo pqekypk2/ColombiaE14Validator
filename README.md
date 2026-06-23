@@ -9,10 +9,12 @@ Este repositorio esta preparado para publicar solo el codigo y la configuracion 
 - Analizador OCR: lee PDFs E14 desde disco, extrae campos, valida totales y genera reportes de inconsistencias.
 - Etiquetador y entrenamiento: crea recortes OCR, permite etiquetarlos en una pagina local y entrena un modelo de digitos.
 - Visualizador de inconsistencias: abre una pagina local para revisar registro por registro, ver el PDF al lado y marcar revisiones o fraude.
+- Comparador de fuentes E14: registra Claveros, Delegados y Transmision por mesa para validar diferencias entre PDFs disponibles.
 
 La documentacion detallada esta en:
 
 - [Analizador OCR](docs/analizador-ocr.md)
+- [Comparador de fuentes E14](docs/comparador-fuentes.md)
 - [Etiquetador y entrenamiento](docs/etiquetador-entrenamiento.md)
 - [Visualizador de inconsistencias](docs/visualizador-inconsistencias.md)
 
@@ -101,6 +103,8 @@ python .\src\analyze_e14.py report
 python .\src\review_inconsistencies.py
 ```
 
+La pantalla principal del mismo servicio es el revisor de mesas: `http://127.0.0.1:8010/`. Muestra las fuentes disponibles por mesa, permite marcar revisiones separadas por fuente o comparacion y conserva el visor OCR anterior en `/inconsistencias`.
+
 ## Estructura esperada
 
 ```text
@@ -112,6 +116,7 @@ docs/
   visualizador-inconsistencias.md
 src/
   analyze_e14.py
+  compare_e14_sources.py
   label_crops.py
   train_e14_digit_model.py
   review_inconsistencies.py

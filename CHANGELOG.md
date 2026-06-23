@@ -11,6 +11,15 @@ El formato sigue la idea de mantener una lista humana de cambios por version, y 
 - La ruta local por defecto de PDFs E14 ahora apunta a `downloads/E14/claveros/` para mantener separada la fuente de Claveros.
 - La documentacion deja preparada la convencion de carpetas para futuras fuentes `delegados` y `transmision`, con miras a validar los tres E14 entre si en una version posterior.
 
+### Added
+
+- Comparador piloto v2 para registrar fuentes E14 separadas, reutilizar OCR historico de Claveros y guardar hallazgos entre fuentes en SQLite/CSV.
+- Bandeja principal de revision por mesa, con PDFs dinamicos por fuente, estados separados por fuente/comparacion, notas, fraude, filtros funcionales y CSV de mesas filtradas.
+
+### Fixed
+
+- El OCR de digitos reconoce el relleno con asteriscos en `total_votos_incinerados` como cero cuando el campo lo declara en la configuracion.
+
 ## [0.1.0] - 2026-06-22
 
 ### Added

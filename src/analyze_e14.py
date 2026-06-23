@@ -843,6 +843,79 @@ def cell_dark_pixel_count(image, cell_index: int, cell_count: int = 3, threshold
     return int((inner < threshold).sum())
 
 
+def cell_has_star_filler(cell_image) -> bool:
+    import cv2
+    import numpy as np
+
+    gray = cv2.cvtColor(cell_image, cv2.COLOR_RGB2GRAY) if len(cell_image.shape) == 3 else cell_image
+    height, width = gray.shape[:2]
+    if height < 8 or width < 8:
+        return False
+
+    inner = gray[int(height * 0.12) : int(height * 0.88), int(width * 0.10) : int(width * 0.90)]
+    if inner.size == 0:
+        return False
+
+    scale = 2
+    resized = cv2.resize(
+        inner,
+        (max(1, inner.shape[1] * scale), max(1, inner.shape[0] * scale)),
+        interpolation=cv2.INTER_CUBIC,
+    )
+    blurred = cv2.GaussianBlur(resized, (3, 3), 0)
+    _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    if int((binary > 0).sum()) < 40:
+        return False
+
+    lines = cv2.HoughLinesP(
+        binary,
+        1,
+        np.pi / 180,
+        threshold=20,
+        minLineLength=max(10, min(binary.shape[:2]) // 4),
+        maxLineGap=6,
+    )
+    if lines is None or len(lines) < 20:
+        return False
+
+    angle_bins: set[str] = set()
+    for x1, y1, x2, y2 in lines[:, 0, :]:
+        angle = (math.degrees(math.atan2(int(y2) - int(y1), int(x2) - int(x1))) + 180.0) % 180.0
+        if angle < 15 or angle > 165:
+            angle_bins.add("h")
+        elif 75 < angle < 105:
+            angle_bins.add("v")
+        elif 20 < angle < 70:
+            angle_bins.add("d1")
+        elif 110 < angle < 160:
+            angle_bins.add("d2")
+
+    return len(angle_bins) >= 3 or {"h", "v"}.issubset(angle_bins)
+
+
+def crop_has_zero_filler(
+    image,
+    field: dict[str, Any] | None,
+    defaults: dict[str, Any] | None,
+) -> bool:
+    if not field or field.get("zero_filler", (defaults or {}).get("zero_filler")) != "star":
+        return False
+
+    cell_count = int(field.get("digit_cells", (defaults or {}).get("digit_cells", 3)) or 3)
+    if cell_count <= 1:
+        return False
+
+    height, width = image.shape[:2]
+    filled_cells = 0
+    for index in range(cell_count):
+        x0 = round(width * index / cell_count)
+        x1 = round(width * (index + 1) / cell_count)
+        if cell_has_star_filler(image[:, x0:x1]):
+            filled_cells += 1
+
+    return filled_cells == cell_count
+
+
 def get_digit_model(model_path: Path, device: str):
     if device == "auto":
         try:
@@ -870,8 +943,14 @@ def get_digit_model(model_path: Path, device: str):
     return cached
 
 
-def ocr_digit_model_image(image, model_path: Path, device: str) -> tuple[str, float | None]:
-    digits, confidence, _ = ocr_digit_model_candidates_image(image, model_path, device)
+def ocr_digit_model_image(
+    image,
+    model_path: Path,
+    device: str,
+    field: dict[str, Any] | None = None,
+    defaults: dict[str, Any] | None = None,
+) -> tuple[str, float | None]:
+    digits, confidence, _ = ocr_digit_model_candidates_image(image, model_path, device, field, defaults)
     return digits, confidence
 
 
@@ -879,11 +958,15 @@ def ocr_digit_model_candidates_image(
     image,
     model_path: Path,
     device: str,
+    field: dict[str, Any] | None = None,
+    defaults: dict[str, Any] | None = None,
 ) -> tuple[str, float | None, list[dict[str, Any]]]:
     import cv2
 
     if not crop_has_dark_ink(image):
         return "", 0.0, []
+    if crop_has_zero_filler(image, field, defaults):
+        return "000", 95.0, [{"digits": "000", "value": 0, "confidence": 95.0, "probability": 1.0}]
 
     digit_model, deps, model, resolved_device = get_digit_model(model_path, device)
     _, np, torch, *_ = deps
@@ -909,7 +992,7 @@ def ocr_image(
     if engine == "digit-model" and field.get("type") == "number":
         if digit_model_path is None:
             raise DependencyError("Falta --digit-model para usar --engine digit-model.")
-        return ocr_digit_model_image(image, digit_model_path, model_device)
+        return ocr_digit_model_image(image, digit_model_path, model_device, field, defaults)
 
     if field.get("type") == "number" and field.get("digit_cells", defaults.get("digit_cells", 3)):
         return ocr_number_image(image, field, defaults, tesseract_cmd)
@@ -1404,6 +1487,8 @@ def analyze_pdf(
                 crop,
                 digit_model_path,
                 model_device,
+                field,
+                defaults,
             )
             field_features.setdefault(field["key"], {})["candidates"] = candidates
         else:
